@@ -109,3 +109,31 @@ leader advances to the next replica so subsequent ops probe a live node
 **Lesson:** safety rules about *an operation* must not freeze *the client*.
 Liveness bugs like this don't show up in safety histories — only an explicit
 "does the system make progress again" assertion caught it.
+
+---
+
+## 5. Two Raft clusters cross-talking through shared peer indices
+
+**Found:** Phase 3, first sharded run — `TestShardBasicAndMigration` hung
+forever; the goroutine dump showed clients looping on `ErrWrongGroup` while
+the shard group never advanced past config 0.
+
+**Symptom:** shard groups never elected leaders. Worse was possible: the
+controller cluster was receiving the groups' RequestVote and AppendEntries
+RPCs.
+
+**Root cause:** `sim.RaftTransport` equated Raft peer index with network
+endpoint id. Every earlier test had exactly one cluster at endpoints 0..n-1,
+so the identity mapping silently worked. The sharded world puts the
+controller at endpoints 0–2 and each group's replicas at higher ids — but
+each group's Raft still addressed peers 0..2, i.e. the *controller's*
+endpoints. Two independent consensus clusters were exchanging consensus
+traffic; cross-cluster AppendEntries can truncate the wrong cluster's log,
+which is a silent split-brain factory.
+
+**Fix:** the transport takes an explicit peer-index → endpoint mapping
+(`sim/raft.go`), and multi-cluster worlds must supply it.
+
+**Lesson:** "it worked in every previous test" is exactly what an implicit
+identity mapping looks like right up until the topology changes. Anything
+that names a peer should name it in one namespace, once.

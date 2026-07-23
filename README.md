@@ -14,6 +14,8 @@ by section, and code comments cite the sections they implement.
 | `sim/` | Seed-locked simulated network: partitions, message drops, delivery delays, reply reordering, crash/restart |
 | `linz/` | Linearizability checker (Wing & Gong / Lowe DFS with memoization, per-key compositional, indeterminate-op support) |
 | `chaos/` | Jepsen-style rig: KV subject + recording clients + seeded nemesis (leader kills, partitions, disk-full, reordering) |
+| `kv/` | Session KV service: exactly-once writes (clientID+seq dedup), lease-read fast path, snapshot-carried sessions |
+| `shard/` | Sharded keyspace: shard controller (configs via Raft) + shard groups with pull-based migration and per-shard sessions |
 
 ## Phase 1 — Raft core
 
@@ -75,10 +77,34 @@ RAFTKV_CHAOS_SEEDS=50 go test ./chaos -run TestRandomFaultSchedules -parallel 8
 RAFTKV_CHAOS_BASE=<seed> RAFTKV_CHAOS_SEEDS=1 go test ./chaos -run Schedules   # replay one
 ```
 
+## Phase 3 — KV service layer
+
+* **Exactly-once sessions** (`kv`): clerks stamp writes with
+  (clientID, seq); replicas apply each pair at most once, so retrying an
+  ambiguous failure is finally safe — closing the double-execution hole
+  BUGS.md #2 demonstrates. The session table rides inside snapshots (a
+  restart must not forget which retries already applied) and, in the sharded
+  store, migrates with each shard.
+* **Lease-based reads**: a leader that has heard from a majority within half
+  an election timeout serves Gets from local state — no log entry, no fsync.
+  Safety hinges on two details: the lease is measured from RPC *send* time
+  (the conservative end of the round trip, with margin for clock-rate skew),
+  and a fresh leader must first commit an entry of its own term.
+  `TestStaleLeaseRejected` pins the failure mode; `TestLeaseReadsBypassLog`
+  proves 100 reads add zero log growth.
+* **Sharded keyspace** (`shard`): a shard controller — itself a Raft group —
+  versions shard→group assignments with deterministic, minimal-movement
+  rebalancing. Shard groups advance one config at a time: newly-owned shards
+  are *pulled* frozen from the previous owner and installed via the log;
+  lost shards are held frozen until the new owner confirms installation,
+  then garbage-collected. Ownership is re-checked at apply time, so every
+  replica routes identically. The chaos suite's fault schedules run against
+  the session KV too, with retrying clerks and lease reads in play.
+
 ## Status
 
 - [x] Phase 1 — Raft core (election, replication, persistence, snapshots, sim harness)
 - [x] Phase 2 — Chaos suite: linearizability checker + nemesis schedules
-- [ ] Phase 3 — KV service: exactly-once sessions, sharding, lease reads
+- [x] Phase 3 — KV service: exactly-once sessions, sharding, lease reads
 - [ ] Phase 4 — Benchmarks: YCSB workloads, failover distribution
 - [ ] Phase 5 — Observability: Prometheus/Grafana, CLI, Docker cluster
