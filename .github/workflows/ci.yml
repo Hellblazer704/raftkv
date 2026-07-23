@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  GO_VERSION: "1.22.x"
+
+jobs:
+  unit:
+    name: unit + functional (race detector)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - run: go vet ./...
+      - name: tests with -race
+        run: go test -race -short -count=1 -timeout 20m ./...
+        env:
+          RAFTKV_CHAOS_SEEDS: "4"
+
+  coverage:
+    name: consensus coverage gate (>=85%)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: coverage over raft + wal (unit, functional, chaos)
+        run: >
+          go test -count=1 -timeout 30m
+          -coverprofile=coverage.out
+          -coverpkg=./raft/,./raft/wal/
+          ./raft/... ./chaos/
+        env:
+          RAFTKV_CHAOS_SEEDS: "6"
+      - name: enforce threshold
+        run: |
+          pct=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "consensus coverage: ${pct}%"
+          awk -v p="$pct" 'BEGIN { exit !(p >= 85.0) }' || {
+            echo "::error::consensus coverage ${pct}% is below the 85% gate"
+            exit 1
+          }
+
+  chaos:
+    name: chaos shard ${{ matrix.shard }} (250 fault schedules)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # 4 shards x 250 seeds = 1000 randomized fault schedules per push.
+      # Any linearizability violation fails the build and uploads the seed,
+      # nemesis timeline, and full history as an artifact.
+      - name: run schedules
+        run: >
+          go test ./chaos -run TestRandomFaultSchedules
+          -count=1 -parallel 16 -timeout 120m
+        env:
+          RAFTKV_CHAOS_SEEDS: "250"
+          RAFTKV_CHAOS_BASE: ${{ matrix.shard == 0 && '1' || matrix.shard == 1 && '251' || matrix.shard == 2 && '501' || '751' }}
+      - name: upload violation dumps
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-failures-shard-${{ matrix.shard }}
+          path: chaos/failure-seed*.txt
+          if-no-files-found: ignore
