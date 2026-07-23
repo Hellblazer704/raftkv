@@ -141,6 +141,11 @@ func (c *Cluster) Shutdown() {
 // now returns nanoseconds since the cluster epoch (history timestamps).
 func (c *Cluster) now() int64 { return int64(time.Since(c.epoch)) }
 
+// Target interface for the nemesis.
+func (c *Cluster) NodeCount() int        { return c.N }
+func (c *Cluster) Network() *sim.Network { return c.Net }
+func (c *Cluster) Epoch() int64          { return c.now() }
+
 var clientIDs atomic.Int64
 
 // Client issues ops against the cluster and records a linearizability
