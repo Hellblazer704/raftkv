@@ -59,7 +59,6 @@ func (rf *Raft) becomeLeaderLocked() {
 	rf.leaderID = rf.me
 	rf.nextIndex = make([]int, rf.n)
 	rf.matchIndex = make([]int, rf.n)
-	rf.ackTime = make([]time.Time, rf.n)
 	rf.leaseFrom = make([]time.Time, rf.n)
 	for i := range rf.nextIndex {
 		rf.nextIndex[i] = rf.log.lastIndex() + 1

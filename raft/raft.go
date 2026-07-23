@@ -129,11 +129,10 @@ type Raft struct {
 	nextIndex  []int
 	matchIndex []int
 
-	// ackTime[i] is the last local time peer i acknowledged an AppendEntries
-	// from this leadership term; the basis for the leader lease (used by
-	// lease-based linearizable reads).
-	ackTime   []time.Time
-	leaseFrom []time.Time // per-peer send times of in-flight probes
+	// leaseFrom[i] is the send time of the freshest AppendEntries that peer i
+	// acknowledged in this leadership term — the basis for the leader lease
+	// (see leaseread.go).
+	leaseFrom []time.Time
 
 	electionDeadline time.Time
 	lastBroadcast    time.Time

@@ -55,12 +55,13 @@ func (rf *Raft) replicateTo(peer, term int) {
 	if rf.state != Leader || rf.currentTerm != term {
 		return
 	}
-	// Any successful round trip in our term extends the lease basis for this
-	// peer; the lease is measured from send time, the conservative bound.
+	// Any round trip acknowledged in our term extends the lease basis for
+	// this peer; the lease is measured from send time, the conservative
+	// bound. Even a Success=false (log conflict) reply counts: the follower
+	// reset its election timer before running the consistency check.
 	if reply.Success || reply.Term == term {
 		if sentAt.After(rf.leaseFrom[peer]) {
 			rf.leaseFrom[peer] = sentAt
-			rf.ackTime[peer] = time.Now()
 		}
 	}
 	if reply.Success {
