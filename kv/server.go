@@ -21,12 +21,45 @@ type Server struct {
 	mu          sync.Mutex
 	applied     *sync.Cond // broadcast when lastApplied advances (lease reads)
 	data        map[string]string
-	lastSeq     map[int64]int64 // session table: highest applied seq per client
+	sessions    map[int64]session // per-client dedup + memoized CAS results
 	waiters     map[int][]waiter
 	lastApplied int
 
 	snapshotThreshold int
 	dead              atomic.Bool
+	counters          counters
+}
+
+// session is one client's exactly-once state. CAS is the op whose *result*
+// carries information, so it is memoized: a duplicate CAS delivery must
+// return the original outcome, not re-evaluate against newer state.
+type session struct {
+	LastSeq    int64
+	CasSuccess bool
+	CasOld     string
+}
+
+// counters are cheap always-on operation counters, exported for metrics.
+type counters struct {
+	Gets, LeaseReads, Puts, Appends, Cas, WrongLeader, Timeouts atomic.Int64
+}
+
+// Counters is a point-in-time snapshot of the server's op counters.
+type Counters struct {
+	Gets, LeaseReads, Puts, Appends, Cas, WrongLeader, Timeouts int64
+}
+
+// Counters returns current op counts (for metrics/tests).
+func (s *Server) Counters() Counters {
+	return Counters{
+		Gets:        s.counters.Gets.Load(),
+		LeaseReads:  s.counters.LeaseReads.Load(),
+		Puts:        s.counters.Puts.Load(),
+		Appends:     s.counters.Appends.Load(),
+		Cas:         s.counters.Cas.Load(),
+		WrongLeader: s.counters.WrongLeader.Load(),
+		Timeouts:    s.counters.Timeouts.Load(),
+	}
 }
 
 type waiter struct {
@@ -36,8 +69,10 @@ type waiter struct {
 }
 
 type waitResult struct {
-	err   Err
-	value string
+	err     Err
+	value   string
+	casOK   bool
+	casSeen bool // result carries CAS fields
 }
 
 // commitWait bounds how long an RPC handler waits for its log entry to
@@ -52,7 +87,7 @@ func NewServer(me, n int, transport raft.Transport, storage raft.Storage, snapsh
 		me:                me,
 		applyCh:           make(chan raft.ApplyMsg),
 		data:              make(map[string]string),
-		lastSeq:           make(map[int64]int64),
+		sessions:          make(map[int64]session),
 		waiters:           make(map[int][]waiter),
 		snapshotThreshold: snapshotThreshold,
 	}
@@ -83,16 +118,22 @@ func (s *Server) Kill() {
 // PutAppend handles writes. Exactly-once: if this clerk's seq has already
 // been applied, reply OK without touching the log.
 func (s *Server) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
+	if args.Append {
+		s.counters.Appends.Add(1)
+	} else {
+		s.counters.Puts.Add(1)
+	}
 	if s.dead.Load() {
 		reply.Err = ErrWrongLeader
 		return nil
 	}
 	if _, isLeader := s.rf.GetState(); !isLeader {
+		s.counters.WrongLeader.Add(1)
 		reply.Err = ErrWrongLeader
 		return nil
 	}
 	s.mu.Lock()
-	if args.Seq <= s.lastSeq[args.ClientID] {
+	if args.Seq <= s.sessions[args.ClientID].LastSeq {
 		s.mu.Unlock()
 		reply.Err = OK // duplicate of an applied write
 		return nil
@@ -104,25 +145,74 @@ func (s *Server) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 		kind = opAppend
 	}
 	res := s.propose(Op{Kind: kind, Key: args.Key, Value: args.Value, ClientID: args.ClientID, Seq: args.Seq})
+	s.countErr(res.err)
 	reply.Err = res.err
 	return nil
+}
+
+// Cas handles compare-and-swap. Duplicates return the memoized original
+// outcome — re-evaluating a retried CAS against newer state would report a
+// wrong answer.
+func (s *Server) Cas(args *CasArgs, reply *CasReply) error {
+	s.counters.Cas.Add(1)
+	if s.dead.Load() {
+		reply.Err = ErrWrongLeader
+		return nil
+	}
+	if _, isLeader := s.rf.GetState(); !isLeader {
+		s.counters.WrongLeader.Add(1)
+		reply.Err = ErrWrongLeader
+		return nil
+	}
+	s.mu.Lock()
+	if sess, ok := s.sessions[args.ClientID]; ok && args.Seq <= sess.LastSeq {
+		s.mu.Unlock()
+		if args.Seq == sess.LastSeq {
+			reply.Err, reply.Success, reply.Old = OK, sess.CasSuccess, sess.CasOld
+		} else {
+			// Older than the clerk's live op; no correct clerk reads this.
+			reply.Err = ErrWrongLeader
+		}
+		return nil
+	}
+	s.mu.Unlock()
+
+	res := s.propose(Op{Kind: opCas, Key: args.Key, Value: args.Value, Expect: args.Expect, ClientID: args.ClientID, Seq: args.Seq})
+	s.countErr(res.err)
+	reply.Err = res.err
+	if res.err == OK {
+		reply.Success, reply.Old = res.casOK, res.value
+	}
+	return nil
+}
+
+func (s *Server) countErr(err Err) {
+	switch err {
+	case ErrWrongLeader:
+		s.counters.WrongLeader.Add(1)
+	case ErrTimeout:
+		s.counters.Timeouts.Add(1)
+	}
 }
 
 // Get handles reads: lease fast path when the leader holds a majority lease,
 // through-the-log otherwise.
 func (s *Server) Get(args *GetArgs, reply *GetReply) error {
+	s.counters.Gets.Add(1)
 	if s.dead.Load() {
 		reply.Err = ErrWrongLeader
 		return nil
 	}
 	if readIndex, ok := s.rf.LeaseRead(); ok {
 		if value, served := s.leaseServe(readIndex, args.Key); served {
+			s.counters.LeaseReads.Add(1)
 			reply.Err, reply.Value = OK, value
 			return nil
 		}
 		// Fall through to the log path (applier lagging or node dying).
 	}
 	res := s.propose(Op{Kind: opGet, Key: args.Key, ClientID: args.ClientID, Seq: args.Seq})
+	s.countErr(res.err)
 	reply.Err, reply.Value = res.err, res.value
 	return nil
 }
@@ -175,26 +265,41 @@ func (s *Server) applyLoop() {
 				panic("kv: undecodable command")
 			}
 			s.mu.Lock()
-			var out string
+			res := waitResult{err: OK}
 			switch op.Kind {
 			case opGet:
-				out = s.data[op.Key]
-			case opPut, opAppend:
+				res.value = s.data[op.Key]
+			case opPut, opAppend, opCas:
 				// The dedup that makes clerk retries safe: a (client, seq)
 				// applies at most once no matter how many log entries carry it.
-				if op.Seq > s.lastSeq[op.ClientID] {
-					if op.Kind == opPut {
+				sess := s.sessions[op.ClientID]
+				if op.Seq > sess.LastSeq {
+					switch op.Kind {
+					case opPut:
 						s.data[op.Key] = op.Value
-					} else {
+					case opAppend:
 						s.data[op.Key] += op.Value
+					case opCas:
+						sess.CasOld = s.data[op.Key]
+						sess.CasSuccess = sess.CasOld == op.Expect
+						if sess.CasSuccess {
+							s.data[op.Key] = op.Value
+						}
 					}
-					s.lastSeq[op.ClientID] = op.Seq
+					sess.LastSeq = op.Seq
+					s.sessions[op.ClientID] = sess
+				}
+				if op.Kind == opCas && op.Seq == s.sessions[op.ClientID].LastSeq {
+					// Fresh or duplicate: the memoized outcome is the answer.
+					res.casSeen = true
+					res.casOK = s.sessions[op.ClientID].CasSuccess
+					res.value = s.sessions[op.ClientID].CasOld
 				}
 			}
 			s.lastApplied = msg.CommandIndex
 			for _, w := range s.waiters[msg.CommandIndex] {
 				if w.clientID == op.ClientID && w.seq == op.Seq {
-					w.ch <- waitResult{err: OK, value: out}
+					w.ch <- res
 				} else {
 					// A different command landed at this index; the waiter's
 					// clerk retries with the same seq — safe under dedup.
@@ -228,10 +333,10 @@ func (s *Server) applyLoop() {
 
 // snapshotState is everything the service must carry across a snapshot:
 // the data AND the session table — dropping the sessions would let old
-// duplicates re-apply after a restart.
+// duplicates re-apply (or re-answer CAS wrongly) after a restart.
 type snapshotState struct {
-	Data        map[string]string
-	LastSeq     map[int64]int64
+	KV          map[string]string
+	Sessions    map[int64]session
 	LastApplied int
 }
 
@@ -240,7 +345,7 @@ func (s *Server) maybeSnapshotLocked(index int) {
 		return
 	}
 	var buf bytes.Buffer
-	err := gob.NewEncoder(&buf).Encode(&snapshotState{Data: s.data, LastSeq: s.lastSeq, LastApplied: index})
+	err := gob.NewEncoder(&buf).Encode(&snapshotState{KV: s.data, Sessions: s.sessions, LastApplied: index})
 	if err != nil {
 		panic("kv: snapshot encode: " + err.Error())
 	}
@@ -252,13 +357,13 @@ func (s *Server) restoreSnapshotLocked(snap []byte, index int) {
 	if err := gob.NewDecoder(bytes.NewReader(snap)).Decode(&st); err != nil {
 		panic("kv: snapshot decode: " + err.Error())
 	}
-	s.data = st.Data
-	s.lastSeq = st.LastSeq
+	s.data = st.KV
+	s.sessions = st.Sessions
 	if s.data == nil {
 		s.data = make(map[string]string)
 	}
-	if s.lastSeq == nil {
-		s.lastSeq = make(map[int64]int64)
+	if s.sessions == nil {
+		s.sessions = make(map[int64]session)
 	}
 	s.lastApplied = index
 }

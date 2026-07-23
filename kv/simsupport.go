@@ -14,6 +14,8 @@ func (ss SimService) Dispatch(method string, args, reply any) {
 		_ = ss.S.Get(args.(*GetArgs), reply.(*GetReply))
 	case "KV.PutAppend":
 		_ = ss.S.PutAppend(args.(*PutAppendArgs), reply.(*PutAppendReply))
+	case "KV.Cas":
+		_ = ss.S.Cas(args.(*CasArgs), reply.(*CasReply))
 	default:
 		(&sim.RaftService{RF: ss.S.rf}).Dispatch(method, args, reply)
 	}

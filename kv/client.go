@@ -66,6 +66,25 @@ func (ck *Clerk) putAppend(key, value string, isAppend bool) {
 	}
 }
 
+// Cas atomically sets key to value iff its current value equals expect,
+// returning (whether it swapped, the value observed). Retries are safe: a
+// duplicate delivery returns the original attempt's memoized outcome.
+func (ck *Clerk) Cas(key, expect, value string) (bool, string) {
+	ck.mu.Lock()
+	ck.seq++
+	args := &CasArgs{Key: key, Expect: expect, Value: value, ClientID: ck.clientID, Seq: ck.seq}
+	ck.mu.Unlock()
+	for attempt := 0; ; attempt++ {
+		target := ck.pick(attempt)
+		reply := &CasReply{}
+		if ck.transport.Call(target, "KV.Cas", args, reply) && reply.Err == OK {
+			ck.setLeader(target)
+			return reply.Success, reply.Old
+		}
+		ck.backoff(attempt)
+	}
+}
+
 func (ck *Clerk) pick(attempt int) int {
 	ck.mu.Lock()
 	defer ck.mu.Unlock()

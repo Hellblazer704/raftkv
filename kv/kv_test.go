@@ -356,6 +356,59 @@ func TestStaleLeaseRejected(t *testing.T) {
 	}
 }
 
+func TestCasBasic(t *testing.T) {
+	c := newCluster(3, 107, 0)
+	defer c.Shutdown()
+	ck := c.clerk()
+
+	ck.Put("k", "a")
+	if ok, old := ck.Cas("k", "wrong", "b"); ok || old != "a" {
+		t.Fatalf("cas(wrong) = %v, %q", ok, old)
+	}
+	if ok, old := ck.Cas("k", "a", "b"); !ok || old != "a" {
+		t.Fatalf("cas(a->b) = %v, %q", ok, old)
+	}
+	if v := ck.Get("k"); v != "b" {
+		t.Fatalf("k=%q", v)
+	}
+}
+
+// TestCasAtomicIncrementUnreliable: concurrent CAS-loop counters over a
+// lossy network. If a retried CAS re-evaluated instead of returning its
+// memoized outcome, increments would be lost or doubled.
+func TestCasAtomicIncrementUnreliable(t *testing.T) {
+	c := newCluster(5, 108, 0)
+	defer c.Shutdown()
+	c.net.SetReliable(false)
+
+	const clerks, increments = 3, 10
+	var wg sync.WaitGroup
+	for i := 0; i < clerks; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ck := c.clerk()
+			done := 0
+			for done < increments {
+				cur := ck.Get("counter")
+				n := 0
+				if cur != "" {
+					n, _ = strconv.Atoi(cur)
+				}
+				if ok, _ := ck.Cas("counter", cur, strconv.Itoa(n+1)); ok {
+					done++
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	c.net.SetReliable(true)
+	ck := c.clerk()
+	if v := ck.Get("counter"); v != strconv.Itoa(clerks*increments) {
+		t.Fatalf("counter=%q, want %d", v, clerks*increments)
+	}
+}
+
 // recClerk performs bounded-retry ops and records a linearizability history.
 // Writes retry with the same seq (safe: dedup); a write that never confirms
 // is recorded as indeterminate.

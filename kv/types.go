@@ -49,11 +49,29 @@ type GetReply struct {
 	Value string
 }
 
+// CasArgs is compare-and-swap: set Key to Value iff its current value equals
+// Expect. The one op whose *result* matters for exactly-once: a retried CAS
+// must see the original attempt's outcome, so sessions memoize it.
+type CasArgs struct {
+	Key      string
+	Expect   string
+	Value    string
+	ClientID int64
+	Seq      int64
+}
+
+type CasReply struct {
+	Err     Err
+	Success bool
+	Old     string // value observed at apply time
+}
+
 // Op is the command replicated through Raft (gob-encoded).
 type Op struct {
 	Kind     opKind
 	Key      string
 	Value    string
+	Expect   string // opCas only
 	ClientID int64
 	Seq      int64
 }
@@ -64,6 +82,7 @@ const (
 	opGet opKind = iota
 	opPut
 	opAppend
+	opCas
 )
 
 // Transport carries clerk RPCs to server i. Implemented by the simulated
