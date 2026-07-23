@@ -1,0 +1,8 @@
+# Binaries and coverage
+/bin/
+*.exe
+*.out
+coverage.*
+
+# Local cluster data
+/data/
