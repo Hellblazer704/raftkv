@@ -31,12 +31,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-      - name: coverage over raft + wal (unit, functional, chaos)
+      # Coverage is measured over the consensus packages (raft + wal) but
+      # driven by every suite that exercises them — including kv and shard,
+      # which are the only callers of lease reads, Stats, and LeaderHint.
+      - name: coverage over raft + wal (all consensus callers)
         run: >
           go test -count=1 -timeout 30m
           -coverprofile=coverage.out
           -coverpkg=./raft/,./raft/wal/
-          ./raft/... ./chaos/
+          ./raft/... ./chaos/ ./kv/ ./shard/
         env:
           RAFTKV_CHAOS_SEEDS: "6"
       - name: enforce threshold

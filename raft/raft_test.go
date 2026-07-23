@@ -355,6 +355,59 @@ func TestFigure8Unreliable(t *testing.T) {
 	c.one(randCmd()%10000, 5, true)
 }
 
+// TestInspectionAPIs deterministically exercises the read-only inspection
+// surface used by the KV lease path and the metrics/CLI tooling: Stats,
+// LeaseRead, LeaderHint, AppliedIndex. Coverage here does not depend on
+// chaos timing — the functions are simply called on every node in a stable
+// cluster, and the leader is additionally checked for a live lease.
+func TestInspectionAPIs(t *testing.T) {
+	c := newCluster(t, 3, 20, true)
+	defer c.cleanup()
+
+	// Commit a few current-term entries so the leader can hold a read lease.
+	for i := 1; i <= 3; i++ {
+		c.one(500+i, 3, true)
+	}
+	leader := c.checkOneLeader()
+
+	for i := 0; i < 3; i++ {
+		rf := c.raft(i)
+		st := rf.Stats()
+		if st.State == "" {
+			t.Fatalf("node %d empty state string", i)
+		}
+		if st.LastApplied > st.CommitIndex {
+			t.Fatalf("node %d applied %d > commit %d", i, st.LastApplied, st.CommitIndex)
+		}
+		if st.CommitIndex < st.FirstIndex {
+			t.Fatalf("node %d commit %d < firstIndex %d", i, st.CommitIndex, st.FirstIndex)
+		}
+		rf.LeaseRead()   // exercised on followers (returns !ok) and leader
+		rf.LeaderHint()  // follower returns leaderID, leader returns self
+		rf.AppliedIndex()
+	}
+
+	// The leader must eventually hold a lease and report itself.
+	deadline := time.Now().Add(3 * time.Second)
+	gotLease := false
+	for time.Now().Before(deadline) {
+		if _, ok := c.raft(leader).LeaseRead(); ok {
+			gotLease = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !gotLease {
+		t.Fatal("leader never acquired a read lease in a healthy cluster")
+	}
+	if hint := c.raft(leader).LeaderHint(); hint != leader {
+		t.Fatalf("leader hint = %d, want self %d", hint, leader)
+	}
+	if c.raft(leader).Stats().State != "leader" {
+		t.Fatal("leader Stats() does not report leader state")
+	}
+}
+
 func TestSnapshotBasic(t *testing.T) {
 	c := newCluster(t, 3, 14, true)
 	c.snapshotEvery = 10

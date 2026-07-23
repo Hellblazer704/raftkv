@@ -26,7 +26,7 @@ bench: build
 	./bin/raftkv-bench -mode recovery -nodes 3 -records 8000 -valuesize 256
 
 cover:
-	RAFTKV_CHAOS_SEEDS=6 $(GO) test -count=1 -coverprofile=coverage.out -coverpkg=./raft/,./raft/wal/ ./raft/... ./chaos/
+	RAFTKV_CHAOS_SEEDS=6 $(GO) test -count=1 -coverprofile=coverage.out -coverpkg=./raft/,./raft/wal/ ./raft/... ./chaos/ ./kv/ ./shard/
 	$(GO) tool cover -func=coverage.out | tail -1
 
 docker-up:
