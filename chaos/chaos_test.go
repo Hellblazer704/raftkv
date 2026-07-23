@@ -93,7 +93,10 @@ func runSchedule(t *testing.T, seed int64) {
 				default:
 					cl.Get(key)
 				}
-				time.Sleep(time.Duration(rng.Intn(40)) * time.Millisecond)
+				// The sleep floor bounds history density across machine
+				// speeds: on Linux a 0ms draw really is 0ms, and the denser
+				// histories made checker state explode (CI OOM).
+				time.Sleep(time.Duration(10+rng.Intn(30)) * time.Millisecond)
 			}
 		}(cls[i], seed*1000+int64(i))
 	}

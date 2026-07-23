@@ -137,3 +137,54 @@ which is a silent split-brain factory.
 **Lesson:** "it worked in every previous test" is exactly what an implicit
 identity mapping looks like right up until the topology changes. Anything
 that names a peer should name it in one namespace, once.
+
+---
+
+## 6. Disconnect set computed from a stale leader reading
+
+**Found:** first CI run on GitHub's runners — `TestReElection` failed under
+`-race` with "node claims leadership without a quorum", after hundreds of
+clean local runs.
+
+**Symptom:** the no-quorum assertion found a connected leader.
+
+**Root cause:** the test captured `leader2`, reconnected the *old* leader,
+then disconnected `leader2` and one other node. On slow runners the rejoin
+plausibly triggers a fresh election that a different node wins — legal
+behavior — so the test disconnected the wrong pair and left the actual
+leader connected and (correctly, from Raft's perspective) still leading.
+A harness bug: the assertion blamed the implementation for the test's own
+stale read.
+
+**Fix:** re-read the leader after the rejoin settles (`raft/raft_test.go`).
+
+**Lesson:** tests that act on "who is leader" must act on a *current*
+answer; leadership is a moving target by design. Different hardware timing
+is itself a nemesis.
+
+---
+
+## 7. Sixteen linearizability checkers OOM a 16 GB runner
+
+**Found:** same first CI run — all chaos shards died with SIGTERM ~90s in,
+right when the first wave of 16 parallel schedules finishes and hands its
+histories to the checker.
+
+**Symptom:** exit 143 with no test output; jobs killed by the runner.
+
+**Root cause:** two compounding effects. On Linux, `Sleep(rand(40ms))`
+actually sleeps ~0 on small draws (Windows floors at ~15ms), so client
+histories were several times denser than any local run — many more
+*concurrent indeterminate writes*, which is the exact shape that makes the
+WGL search space explode. And the checker's memoization cache had no size
+bound, so 16 concurrent checkers each growing a multi-GB cache took the
+runner down before the per-check time budget could fire.
+
+**Fix:** a floor on client pacing (bounds history density across machine
+speeds), a hard cap on the checker cache that returns "Unknown /
+inconclusive" instead of growing (linz/checker.go), and chaos parallelism
+of 8 in CI.
+
+**Lesson:** a verifier needs a memory budget as much as a time budget —
+"gives up honestly" must be an explicit state. And test workloads calibrated
+by wall-clock sleeps are calibrated to one machine's clock.

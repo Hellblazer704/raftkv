@@ -540,7 +540,8 @@ func runKVSchedule(t *testing.T, seed int64) {
 				default:
 					rc.get(key)
 				}
-				time.Sleep(time.Duration(rng.Intn(40)) * time.Millisecond)
+				// Sleep floor bounds history density (see chaos_test.go).
+				time.Sleep(time.Duration(10+rng.Intn(30)) * time.Millisecond)
 			}
 		}(rcs[i], seed*17+int64(i))
 	}

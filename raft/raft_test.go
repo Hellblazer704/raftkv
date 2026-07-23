@@ -34,12 +34,12 @@ func TestReElection(t *testing.T) {
 	c.disconnect(leader1)
 	leader2 := c.checkOneLeader()
 
-	// Old leader rejoins: must not disrupt the new leader's reign.
+	// Old leader rejoins: must not cause two leaders. A new election is
+	// legal, so re-read who leads now — computing the disconnect set from a
+	// stale reading left the real leader connected (a harness bug CI caught
+	// on slower runners; BUGS.md #6).
 	c.connect(leader1)
-	if l := c.checkOneLeader(); l != leader2 {
-		// A new election is legal; there must simply be exactly one leader.
-		t.Logf("leadership moved to %d after rejoin", l)
-	}
+	leader2 = c.checkOneLeader()
 
 	// No quorum -> no leader.
 	c.disconnect(leader2)

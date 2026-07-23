@@ -63,10 +63,13 @@ jobs:
       # 4 shards x 250 seeds = 1000 randomized fault schedules per push.
       # Any linearizability violation fails the build and uploads the seed,
       # nemesis timeline, and full history as an artifact.
+      # parallel 8, not 16: each finishing schedule runs a linearizability
+      # check whose memo cache can reach hundreds of MB on adversarial
+      # histories; 16 concurrent checkers OOM'd a 16 GB runner.
       - name: run schedules
         run: >
           go test ./chaos -run TestRandomFaultSchedules
-          -count=1 -parallel 16 -timeout 120m
+          -count=1 -parallel 8 -timeout 120m
         env:
           RAFTKV_CHAOS_SEEDS: "250"
           RAFTKV_CHAOS_BASE: ${{ matrix.shard == 0 && '1' || matrix.shard == 1 && '251' || matrix.shard == 2 && '501' || '751' }}

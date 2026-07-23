@@ -148,6 +148,12 @@ func checkKey(ops []Op, deadline time.Time) (ok, unknown bool) {
 		e     *event
 		state string
 	}
+	// maxCacheEntries bounds the memoization cache (~hundreds of MB at the
+	// cap). Dense histories with many concurrent indeterminate writes can
+	// blow the cache up combinatorially; past the cap the search gives up as
+	// Unknown rather than OOMing the process (learned in CI: 16 concurrent
+	// checkers took a runner down).
+	const maxCacheEntries = 1 << 20
 	var (
 		stack      []frame
 		linearized = newBitset(n)
@@ -187,8 +193,13 @@ func checkKey(ops []Op, deadline time.Time) (ok, unknown bool) {
 
 	for head.next != nil {
 		checked++
-		if checked%4096 == 0 && !deadline.IsZero() && time.Now().After(deadline) {
-			return false, true
+		if checked%4096 == 0 {
+			if !deadline.IsZero() && time.Now().After(deadline) {
+				return false, true
+			}
+			if len(cache) > maxCacheEntries {
+				return false, true
+			}
 		}
 		if !entry.isReturn {
 			newState, legal := step(state, entry.op)
