@@ -68,3 +68,36 @@ func (rf *Raft) AppliedIndex() int {
 	defer rf.mu.Unlock()
 	return rf.lastApplied
 }
+
+// Stats is a point-in-time view of a node's consensus state, for metrics
+// and operator tooling.
+type Stats struct {
+	Term        int
+	State       string
+	LeaderHint  int
+	CommitIndex int
+	LastApplied int
+	FirstIndex  int // snapshot boundary
+	LastIndex   int
+	LogBytes    int
+}
+
+// Stats returns current consensus statistics.
+func (rf *Raft) Stats() Stats {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	leader := rf.leaderID
+	if rf.state == Leader {
+		leader = rf.me
+	}
+	return Stats{
+		Term:        rf.currentTerm,
+		State:       rf.state.String(),
+		LeaderHint:  leader,
+		CommitIndex: rf.commitIndex,
+		LastApplied: rf.lastApplied,
+		FirstIndex:  rf.log.firstIndex(),
+		LastIndex:   rf.log.lastIndex(),
+		LogBytes:    rf.storage.LogSizeBytes(),
+	}
+}
