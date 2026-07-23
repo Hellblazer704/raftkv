@@ -1,0 +1,76 @@
+{
+  "title": "raftkv cluster",
+  "uid": "raftkv",
+  "timezone": "browser",
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Leader",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "raftkv_raft_is_leader == 1", "legendFormat": "node {{node}}", "refId": "A" }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "name" }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Term",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        { "expr": "max(raftkv_raft_term)", "refId": "A" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Commit index",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "raftkv_raft_commit_index", "legendFormat": "node {{node}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Ops/s by type (cluster)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "targets": [
+        { "expr": "sum by (op) (rate(raftkv_ops_total[1m]))", "legendFormat": "{{op}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Lease reads vs total gets",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "targets": [
+        { "expr": "sum(rate(raftkv_ops_total{op=\"get_lease\"}[1m]))", "legendFormat": "lease path", "refId": "A" },
+        { "expr": "sum(rate(raftkv_ops_total{op=\"get\"}[1m]))", "legendFormat": "all gets", "refId": "B" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Un-compacted log bytes (snapshot pressure)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "targets": [
+        { "expr": "raftkv_raft_log_bytes", "legendFormat": "node {{node}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Apply lag (commit - applied)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "targets": [
+        { "expr": "raftkv_raft_commit_index - raftkv_raft_last_applied", "legendFormat": "node {{node}}", "refId": "A" }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "version": 1
+}
